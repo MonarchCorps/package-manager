@@ -1,0 +1,5 @@
+{
+  "name": "hello",
+  "version": "1.0.0",
+  "files": ["bin/hello", "share/hello/README.md"]
+}
