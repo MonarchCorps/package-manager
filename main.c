@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <errno.h>
 
 typedef struct
 {
@@ -13,6 +16,7 @@ typedef struct
 Manifest* parse_manifest(const char* filename);
 char* extract_key(const char* buffer, const char* field_name);
 char** parse_files(size_t* file_count, const char* buffer);
+int extraction(char* archive_path, char* destination_directory);
 void free_manifest(Manifest* manifest);
 void round_cleanup(
     Manifest* manifest,
@@ -31,13 +35,8 @@ int main(void)
         return 1;
     }
 
-    printf("%s\n", manifest->name);
-    printf("%s\n", manifest->version);
-
-    for (size_t i = 0; i < manifest->file_count; i++)
-    {
-        printf("%s\n", manifest->files[i]);
-    }
+    const int result = extraction("hello-1.0.0.tar.gz", "/tmp/xpkg_test");
+    printf("%d", result);
 
     free_manifest(manifest);
     return 0;
@@ -185,6 +184,26 @@ char** parse_files(size_t* file_count, const char* buffer)
     }
 
     return files;
+}
+
+int extraction(char* archive_path, char* destination_directory)
+{
+    if (access(archive_path, F_OK) != 0) return -1;
+
+    char buffer[512];
+    snprintf(buffer, sizeof(buffer), "tar -xzf %s -C %s", archive_path, destination_directory);
+
+    const int mkdir_result = mkdir(destination_directory, 0755);
+    if (mkdir_result == -1 && errno != EEXIST) return -1;
+
+    FILE* pF = popen(buffer, "r");
+    if (pF == NULL)
+    {
+        return -1;
+    }
+    const int result = pclose(pF);
+    if (result != 0) return -1;
+    return 0;
 }
 
 void free_manifest(Manifest* manifest)
