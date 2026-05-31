@@ -17,6 +17,7 @@ Manifest* parse_manifest(const char* filename);
 char* extract_key(const char* buffer, const char* field_name);
 char** parse_files(size_t* file_count, const char* buffer);
 int extraction(char* archive_path, char* destination_directory);
+int write_package_record(const Manifest* manifest);
 void free_manifest(Manifest* manifest);
 void round_cleanup(
     Manifest* manifest,
@@ -36,7 +37,13 @@ int main(void)
     }
 
     const int result = extraction("hello-1.0.0.tar.gz", "/tmp/xpkg_test");
-    printf("%d", result);
+    if (result != 0)
+    {
+        free_manifest(manifest);
+        return 1;
+    }
+
+    write_package_record(manifest);
 
     free_manifest(manifest);
     return 0;
@@ -203,6 +210,61 @@ int extraction(char* archive_path, char* destination_directory)
     }
     const int result = pclose(pF);
     if (result != 0) return -1;
+    return 0;
+}
+
+int write_package_record(const Manifest* manifest)
+{
+    if (manifest == NULL)
+    {
+        perror("manifest is null");
+        return -1;
+    }
+
+    FILE* pF = fopen("xpkg.db", "a");
+    if (pF == NULL)
+    {
+        perror("failed to open database file");
+        return -1;
+    }
+
+    size_t flat_ile_capacity = 20;
+    char* flat_file = malloc(flat_ile_capacity * sizeof(char));
+
+    if (flat_file == NULL)
+    {
+        perror("out of memory");
+        fclose(pF);
+        return -1;
+    }
+    flat_file[0] = '\0';
+
+    for (size_t i = 0; i < manifest->file_count; i++)
+    {
+        if (strlen(flat_file) + strlen(manifest->files[i]) + 1 > flat_ile_capacity)
+        {
+            flat_ile_capacity *= 2;
+            char* temp = realloc(flat_file, flat_ile_capacity * sizeof(char));
+            if (temp == NULL)
+            {
+                perror("out of memory");
+                free(flat_file);
+                fclose(pF);
+                return -1;
+            }
+            flat_file = temp;
+        }
+
+        strcat(flat_file, manifest->files[i]);
+        if (i < manifest->file_count - 1)
+            strcat(flat_file, ",");
+    }
+
+    fprintf(pF, "%s|%s|%s\n", manifest->name, manifest->version, flat_file);
+
+    free(flat_file);
+    fclose(pF);
+
     return 0;
 }
 
