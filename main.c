@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include <libgen.h>
 
 typedef struct
 {
@@ -19,6 +20,14 @@ char** parse_files(size_t* file_count, const char* buffer);
 int extraction(char* archive_path, char* destination_directory);
 int write_package_record(const Manifest* manifest);
 void free_manifest(Manifest* manifest);
+int copy_file(const char* source_path, const char* destination_path);
+int copy_files(
+    const char** files,
+    size_t file_count,
+    const char* install_dir,
+    const char* package_name,
+    const char* extracted_dir
+);
 void round_cleanup(
     Manifest* manifest,
     char* buffer,
@@ -44,6 +53,14 @@ int main(void)
     }
 
     write_package_record(manifest);
+
+    copy_files(
+        (const char**)manifest->files,
+        manifest->file_count,
+        "/tmp/xpkg_install",
+        manifest->name,
+        "/tmp/xpkg_test/hello-1.0.0"
+    );
 
     free_manifest(manifest);
     return 0;
@@ -154,7 +171,6 @@ char** parse_files(size_t* file_count, const char* buffer)
 
         const char* firstQuote = loopColon + 1;
 
-
         const char* lastQuote = strchr(firstQuote, '"');
 
         char* key = malloc(lastQuote - firstQuote + 1);
@@ -264,6 +280,92 @@ int write_package_record(const Manifest* manifest)
 
     free(flat_file);
     fclose(pF);
+
+    return 0;
+}
+
+int copy_file(const char* source_path, const char* destination_path)
+{
+    FILE* pF = fopen(source_path, "rb");
+    if (pF == NULL)
+    {
+        perror("Failed to open source file");
+        return -1;
+    }
+
+    FILE* pDestF = fopen(destination_path, "wb");
+    if (pDestF == NULL)
+    {
+        perror("Failed to open destination file");
+        fclose(pF);
+        return -1;
+    }
+
+    fseek(pF, 0, SEEK_END);
+    const long file_size = ftell(pF);
+    fseek(pF, 0, SEEK_SET);
+
+    char* buffer = malloc(file_size + 1); // null terminator included
+    if (buffer == NULL)
+    {
+        perror("Out of memory");
+        fclose(pF);
+        fclose(pDestF);
+        return -1;
+    }
+
+    const size_t bytes_read = fread(buffer, 1, file_size, pF);
+    buffer[file_size] = 0;
+
+    fwrite(buffer, bytes_read, 1, pDestF);
+
+    free(buffer);
+    fclose(pF);
+    fclose(pDestF);
+
+    return 0;
+}
+
+int copy_files(
+    const char** files,
+    const size_t file_count,
+    const char* install_dir,
+    const char* package_name,
+    const char* extracted_dir
+)
+{
+    if (files == NULL)
+    {
+        perror("files cannot be NULL");
+        return -1;
+    }
+
+    for (size_t i = 0; i < file_count; i++)
+    {
+        char path_copy[1024];
+        snprintf(path_copy, sizeof(path_copy), "%s", files[i]);
+        char* dir_path = dirname(path_copy);
+
+        char cmd[1024];
+        snprintf(cmd, sizeof(cmd), "mkdir -p %s/%s/%s", install_dir, package_name, dir_path);
+        system(cmd);
+
+        char dest_path[1024];
+        snprintf(dest_path, sizeof(dest_path), "%s/%s/%s", install_dir, package_name, files[i]);
+
+        char source_path[1024];
+        snprintf(source_path, sizeof(source_path), "%s/%s", extracted_dir, files[i]);
+
+        char error_message[1024] = "";
+
+        const int result = copy_file(source_path, dest_path);
+        if (result == -1)
+        {
+            snprintf(error_message, sizeof(error_message), "Could not copy %s to destination directory", files[i]);
+            perror(error_message);
+            return -1;
+        }
+    }
 
     return 0;
 }
