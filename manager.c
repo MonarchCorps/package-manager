@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <libgen.h>
+#include <dirent.h>
 
 Manifest* parse_manifest(const char* filename)
 {
@@ -74,7 +75,7 @@ char* extract_key(const char* buffer, const char* field_name)
     const char* colon = strchr(keyP, ':');
     if (colon == NULL) return NULL;
 
-    const char* startKeyP = colon + 3;
+    const char* startKeyP = colon + 2;
     const char* endKeyP = strchr(startKeyP, '"');
 
     if (startKeyP == NULL || endKeyP == NULL)
@@ -97,7 +98,7 @@ char** parse_files(size_t* file_count, const char* buffer)
     const char* colon = strchr(filesP, ':');
     if (colon == NULL) return NULL;
 
-    const char* startFilesP = colon + 3;
+    const char* startFilesP = colon + 1;
 
     size_t files_capacity = 4;
 
@@ -178,7 +179,7 @@ int write_package_record(const Manifest* manifest)
 {
     if (manifest == NULL)
     {
-        perror("manifest is null");
+        fprintf(stderr, "manifest is null\n");
         return -1;
     }
 
@@ -189,41 +190,16 @@ int write_package_record(const Manifest* manifest)
         return -1;
     }
 
-    size_t flat_ile_capacity = 20;
-    char* flat_file = malloc(flat_ile_capacity * sizeof(char));
-
-    if (flat_file == NULL)
-    {
-        perror("out of memory");
-        fclose(pF);
-        return -1;
-    }
-    flat_file[0] = '\0';
+    fprintf(pF, "%s|%s|", manifest->name, manifest->version);
 
     for (size_t i = 0; i < manifest->file_count; i++)
     {
-        if (strlen(flat_file) + strlen(manifest->files[i]) + 1 > flat_ile_capacity)
-        {
-            flat_ile_capacity *= 2;
-            char* temp = realloc(flat_file, flat_ile_capacity * sizeof(char));
-            if (temp == NULL)
-            {
-                perror("out of memory");
-                free(flat_file);
-                fclose(pF);
-                return -1;
-            }
-            flat_file = temp;
-        }
-
-        strcat(flat_file, manifest->files[i]);
+        fprintf(pF, "%s", manifest->files[i]);
         if (i < manifest->file_count - 1)
-            strcat(flat_file, ",");
+            fprintf(pF, ",");
     }
 
-    fprintf(pF, "%s|%s|%s\n", manifest->name, manifest->version, flat_file);
-
-    free(flat_file);
+    fprintf(pF, "\n");
     fclose(pF);
 
     return 0;
@@ -312,6 +288,198 @@ int copy_files(
         }
     }
 
+    return 0;
+}
+
+int install(const char* archive_path)
+{
+    const char* extract_dir = "/tmp/xpkg_extract";
+    const int extract_result = extraction((char*)archive_path, (char*)extract_dir);
+    if (extract_result != 0)
+    {
+        fprintf(stderr, "Failed to extract %s\n", archive_path);
+        return -1;
+    }
+
+    char* pkg_dir = find_extracted_dir(extract_dir);
+    if (pkg_dir == NULL)
+    {
+        fprintf(stderr, "Failed to find extracted package directory\n");
+        return -1;
+    }
+
+    char manifest_path[1024];
+    snprintf(manifest_path, sizeof(manifest_path), "%s/manifest.json", pkg_dir);
+
+    Manifest* manifest = parse_manifest(manifest_path);
+    if (manifest == NULL)
+    {
+        free(pkg_dir);
+        fprintf(stderr, "Failed to parse manifest\n");
+        return -1;
+    }
+
+    const int copy_result = copy_files(
+        (const char**)manifest->files,
+        manifest->file_count,
+        "/tmp/xpkg_install",
+        manifest->name,
+        pkg_dir
+    );
+
+    free(pkg_dir);
+
+    if (copy_result != 0)
+    {
+        free_manifest(manifest);
+        return -1;
+    }
+
+    const int record_result = write_package_record(manifest);
+    if (record_result != 0)
+    {
+        free_manifest(manifest);
+        return -1;
+    }
+
+    printf("Installed %s %s\n", manifest->name, manifest->version);
+
+    free_manifest(manifest);
+    return 0;
+}
+
+char* find_extracted_dir(const char* extract_dir)
+{
+    DIR* dir = opendir(extract_dir);
+    if (dir == NULL)
+    {
+        perror("Failed to open extract directory");
+        return NULL;
+    }
+
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL)
+    {
+        if (entry->d_name[0] == '.') continue;
+        if (entry->d_type == DT_DIR)
+        {
+            char* result = malloc(1024);
+            if (result == NULL)
+            {
+                closedir(dir);
+                return NULL;
+            }
+            snprintf(result, 1024, "%s/%s", extract_dir, entry->d_name);
+            closedir(dir);
+            return result;
+        }
+    }
+
+    closedir(dir);
+    return NULL;
+}
+
+int list(void)
+{
+    FILE* pF = fopen("xpkg.db", "r");
+    if (pF == NULL)
+    {
+        fprintf(stderr, "No packages installed\n");
+        return -1;
+    }
+
+    char line[2048];
+    int count = 0;
+
+    while (fgets(line, sizeof(line), pF) != NULL)
+    {
+        // format: name|version|files
+        char* name = strtok(line, "|");
+        char* version = strtok(NULL, "|");
+
+        if (name != NULL && version != NULL)
+        {
+            printf("%s %s\n", name, version);
+            count++;
+        }
+    }
+
+    if (count == 0)
+        printf("No packages installed\n");
+
+    fclose(pF);
+    return 0;
+}
+
+int remove_package(const char* package_name)
+{
+    FILE* pF = fopen("xpkg.db", "r");
+    if (pF == NULL)
+    {
+        fprintf(stderr, "No packages installed\n");
+        return -1;
+    }
+
+    char lines[256][2048];
+    int line_count = 0;
+    int found = 0;
+    char files_str[2048] = "";
+
+    while (fgets(lines[line_count], sizeof(lines[0]), pF) != NULL)
+    {
+        char temp[2048];
+        strcpy(temp, lines[line_count]);
+
+        char* name = strtok(temp, "|");
+        if (name != NULL && strcmp(name, package_name) == 0)
+        {
+            found = 1;
+            // extract files field
+            strtok(NULL, "|"); // skip version
+            const char* files = strtok(NULL, "|\n");
+            if (files != NULL)
+                strncpy(files_str, files, sizeof(files_str) - 1);
+        }
+        else
+        {
+            line_count++;
+        }
+    }
+    fclose(pF);
+
+    if (!found)
+    {
+        fprintf(stderr, "Package '%s' not found\n", package_name);
+        return -1;
+    }
+
+    char* token = strtok(files_str, ",");
+    while (token != NULL)
+    {
+        char file_path[1024];
+        snprintf(file_path, sizeof(file_path), "/tmp/xpkg_install/%s/%s", package_name, token);
+        if (remove(file_path) != 0)
+            fprintf(stderr, "Warning: could not delete %s\n", file_path);
+        token = strtok(NULL, ",");
+    }
+
+    char dir_path[1024];
+    snprintf(dir_path, sizeof(dir_path), "rm -rf /tmp/xpkg_install/%s", package_name);
+    system(dir_path);
+
+    FILE* pNew = fopen("xpkg.db", "w");
+    if (pNew == NULL)
+    {
+        fprintf(stderr, "Failed to update database\n");
+        return -1;
+    }
+
+    for (int i = 0; i < line_count; i++)
+        fputs(lines[i], pNew);
+
+    fclose(pNew);
+
+    printf("Removed %s\n", package_name);
     return 0;
 }
 

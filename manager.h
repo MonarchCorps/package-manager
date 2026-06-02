@@ -22,6 +22,10 @@ int extraction(char* archive_path, char* destination_directory);
 int write_package_record(const Manifest* manifest);
 void free_manifest(Manifest* manifest);
 int copy_file(const char* source_path, const char* destination_path);
+int install(const char* archive_path);
+int remove_package(const char* package_name);
+char* find_extracted_dir(const char* extract_dir);
+int list(void);
 int copy_files(
     const char** files,
     size_t file_count,
